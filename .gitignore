@@ -1,0 +1,7 @@
+
+build/
+libs/
+resources/
+.vscode
+.DS_Store
+TODO.txt

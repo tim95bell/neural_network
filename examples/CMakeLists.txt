@@ -1,0 +1,3 @@
+
+add_subdirectory(logic_gates)
+add_subdirectory(mnist_digit_recognition)
