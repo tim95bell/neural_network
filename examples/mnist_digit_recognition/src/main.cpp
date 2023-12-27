@@ -4,6 +4,8 @@
 #include <tnn/tnn.hpp>
 #include <cstdio>
 #include <vector>
+#include <chrono>
+#include <iostream>
 
 static const tnn::U32 input_size = 784;
 static const tnn::U32 output_size = 10;
@@ -12,7 +14,26 @@ static const tnn::U32 train_data_count = data_count * 0.7f;
 static const tnn::U32 test_data_count = data_count - train_data_count;
 static const float rate = 1e-1 * 3;
 static const tnn::U32 batch_count = 420;
-static const tnn::U32 epoch_count = 100;
+//static const tnn::U32 epoch_count = 100;
+static const tnn::U32 epoch_count = 10;
+
+struct Timer {
+    Timer(const char* in_label)
+        : label(in_label)
+        , start_time(std::chrono::high_resolution_clock::now())
+    {}
+
+    ~Timer() {
+        auto end_time = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::time_point_cast<std::chrono::microseconds>(end_time).time_since_epoch().count()
+            - std::chrono::time_point_cast<std::chrono::microseconds>(start_time).time_since_epoch().count();
+        double ms = duration * 0.001;
+        std::cout << label << ": " << duration << "us (" << ms << "ms)" << std::endl;
+    }
+
+    const char* label;
+    std::chrono::time_point<std::chrono::high_resolution_clock> start_time;
+};
 
 tnn::TrainingDatum<input_size, output_size>* parse_data() {
     std::ifstream in_file("resources/train_random.csv");
@@ -110,7 +131,7 @@ void test(tnn::Network<NetworkShape...>& n, tnn::TrainingDatum<input_size, outpu
     printf("average cost: %f\n", average_cost);
     if (incorrect_indices.size() > 0) {
         printf("incorrect indices:\n");
-        for (tnn::U32 i = 0; i < incorrect_indices.size(); ++i) {
+        for (tnn::U32 i = 0; i < incorrect_indices.size() && i < 3; ++i) {
             printf("\t%lu\n", incorrect_indices[i]);
         }
     }
@@ -118,18 +139,19 @@ void test(tnn::Network<NetworkShape...>& n, tnn::TrainingDatum<input_size, outpu
 
 template <tnn::U32... NetworkShape>
 void train(tnn::Network<NetworkShape...>& n, tnn::TrainingDatum<input_size, output_size>* data) {
+    Timer t("train");
     using N = tnn::Network<NetworkShape...>;
     static_assert(input_size == N::input_layer_count());
     static_assert(output_size == N::output_layer_count());
-    printf("cost: %f\n", tnn::average_cost<train_data_count>(n, data));
+    //printf("cost: %f\n", tnn::average_cost<train_data_count>(n, data));
     for (tnn::U32 epoch = 0; epoch < epoch_count; ++epoch) {
         tnn::shuffle_array(data, train_data_count);
         for (tnn::U32 i = 0; i < train_data_count; i += batch_count) {
             tnn::train_gradient_descent<batch_count>(n, data + i, rate);
         }
-        printf("cost: %f\n", tnn::average_cost<train_data_count>(n, data));
+        //printf("cost: %f\n", tnn::average_cost<train_data_count>(n, data));
     }
-    printf("training finished\n");
+    //printf("training finished\n");
 }
 
 void write_training_data(tnn::TrainingDatum<input_size, output_size>* training_data) {

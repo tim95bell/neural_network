@@ -124,7 +124,7 @@ namespace tnn {
     template <tla::U32 DataCount, U32... NetworkShape>
     float average_cost(Network<NetworkShape...>& n, TrainingDatum<Network<NetworkShape...>::input_layer_count(), Network<NetworkShape...>::output_layer_count()>* data);
 
-    template <U32 Layer = 1, U32... NetworkShape>
+    template <U32... NetworkShape>
     void clear_delta(Network<NetworkShape...>& n);
 
     template <U32 DataCount, U32... NetworkShape>
@@ -274,7 +274,6 @@ namespace tnn {
         template <U32 L>
         void fill_random(float from, float to) {
             static_assert(L > 0 && L <= count());
-            // TODO(TB): just fill whole w and b buffers
             auto w_m = w<L>();
             auto b_m = b<L>();
             tla::fill_random(w_m, from, to);
@@ -549,12 +548,11 @@ namespace tnn {
         auto z_l = get_z<L>(n);
         auto a_k = get_a<L - 1>(n);
         auto w_l = get_w<L>(n);
-        tla::multiply(z_l, a_k, w_l);
         auto b_l = get_b<L>(n);
-        z_l += b_l;
         auto a_l = get_a<L>(n);
-        a_l = z_l;
-        tla::apply(a_l, tla::do_sigmoid);
+        tla::multiply_add(z_l, a_k, w_l, b_l);
+
+        tla::assign_apply(a_l, z_l, tla::sigmoid);
 
         if constexpr (L < N::count()) {
             forward<L + 1>(n);
@@ -586,17 +584,10 @@ namespace tnn {
         return result / static_cast<float>(DataCount * N::output_layer_count());
     }
 
-    template <U32 Layer, U32... NetworkShape>
+    template <U32... NetworkShape>
     void clear_delta(Network<NetworkShape...>& n) {
         using N = Network<NetworkShape...>;
-        if constexpr (Layer <= N::count()) {
-            // TODO(TB): just memset whole buffers
-            auto db = get_db<Layer>(n);
-            auto dw = get_dw<Layer>(n);
-            tla::clear(db);
-            tla::clear(dw);
-            clear_delta<Layer + 1>(n);
-        }
+        memset(dw_buffer<1>(n), 0.0f, (N::w_count() + N::b_count()) * sizeof(float));
     }
 
     template <U32 DataCount, U32... NetworkShape>
@@ -613,12 +604,8 @@ namespace tnn {
         auto w = get_w<L>(n);
         auto b = get_b<L>(n);
 
-        // TODO(TB): combine this division and multiplication
-        dw /= static_cast<float>(DataCount);
-        db /= static_cast<float>(DataCount);
-
-        dw *= rate;
-        db *= rate;
+        dw *= rate / static_cast<float>(DataCount);
+        db *= rate / static_cast<float>(DataCount);
 
         w -= dw;
         b -= db;
@@ -645,16 +632,16 @@ namespace tnn {
             auto a_k = get_a<N::count() - 1>(n);
 
             float dc_da_buffer[N::largest_layer_count() * 2];
-            tla::Matrix<float, 1, N::largest_layer_count()> dc_da_l(&dc_da_buffer[0]);
-            tla::Matrix<float, 1, N::largest_layer_count()> dc_da_m(&dc_da_buffer[N::largest_layer_count()]);
+            // TODO(TB): update this when can have 1 dynamic and 1 static dimension
+            tla::Matrix<float, 0, 0> dc_da_l(&dc_da_buffer[0], 1, N::output_layer_count());
+            tla::Matrix<float, 0, 0> dc_da_m(&dc_da_buffer[N::largest_layer_count()], 1, N::output_layer_count());
 
             for (U32 j = 0; j < N::output_layer_count(); ++j) {
                 dc_da_l(j) = 2 * (a_l(j) - output(j)) * tla::sigmoid_derivative(z_l(j));
-                db_l(j) += dc_da_l(j);
-                for (U32 i = 0; i < N::template layer_count<N::count() - 1>(); ++i) {
-                    dw_l(i, j) += dc_da_l(j) * a_k(i);
-                }
             }
+
+            db_l += dc_da_l;
+            tla::multiply_accumulate(dw_l, a_k.free_transpose(), dc_da_l);
 
             train_gradient_descent_internal<N::count() - 1>(n, dc_da_m, dc_da_l);
         }
@@ -663,7 +650,7 @@ namespace tnn {
     }
 
     template <U32 L, U32... NetworkShape>
-    void train_gradient_descent_internal(Network<NetworkShape...>& n, tla::Matrix<float, 1, Network<NetworkShape...>::largest_layer_count()>& dc_da_l, tla::Matrix<float, 1, Network<NetworkShape...>::largest_layer_count()>& dc_da_m) {
+    void train_gradient_descent_internal(Network<NetworkShape...>& n, tla::Matrix<float, 0, 0>& dc_da_l, tla::Matrix<float, 0, 0>& dc_da_m) {
         using N = Network<NetworkShape...>;
         static_assert(L > 0 && L < N::count());
         auto w_m = get_w<L + 1>(n);
@@ -671,19 +658,13 @@ namespace tnn {
         auto db_l = get_db<L>(n);
         auto dw_l = get_dw<L>(n);
         auto a_k = get_a<L - 1>(n);
-        for (U32 j = 0; j < N::template layer_count<L>(); ++j) {
-            dc_da_l(j) = 0.0f;
-            for (U32 k = 0; k < N::template layer_count<L + 1>(); ++k) {
-                dc_da_l(j) += dc_da_m(k) * w_m(j, k);
-            }
+        dc_da_l.resize(N::template layer_count<L>(), 1);
+        tla::multiply(dc_da_l, w_m, dc_da_m.transpose());
+        dc_da_l = dc_da_l.transpose();
+        tla::elementwise_multiply_by_sigmoid_derivative_of(dc_da_l, z_l);
 
-            dc_da_l(j) *= tla::sigmoid_derivative(z_l(j));
-
-            db_l(j) += dc_da_l(j);
-            for (U32 i = 0; i < N::template layer_count<L - 1>(); ++i) {
-                dw_l(i, j) += dc_da_l(j) * a_k(i);
-            }
-        }
+        db_l += dc_da_l;
+        tla::multiply_accumulate(dw_l, a_k.free_transpose(), dc_da_l);
         
         if constexpr (L > 1) {
             train_gradient_descent_internal<L - 1>(n, dc_da_m, dc_da_l);

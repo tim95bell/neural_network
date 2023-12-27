@@ -112,26 +112,26 @@ namespace tla {
         {}
 
         template <U32 OtherRows, U32 OtherCols>
-        explicit Matrix(Matrix<Type, OtherRows, OtherCols>& other)
+        Matrix(Matrix<Type, OtherRows, OtherCols>& other)
             : m_data(other.m_data)
         {
             assert_valid_to_assign(*this, other);
         }
         
-        explicit Matrix(ThisType& other)
+        Matrix(ThisType& other)
             : m_data(other.m_data)
         {
             assert_valid_to_assign(*this, other);
         }
 
         template <U32 OtherRows, U32 OtherCols>
-        explicit Matrix(Matrix<Type, OtherRows, OtherCols>&& other)
+        Matrix(Matrix<Type, OtherRows, OtherCols>&& other)
             : m_data(other.m_data)
         {
             assert_valid_to_assign(*this, other);
         }
 
-        explicit Matrix(ThisType&& other)
+        Matrix(ThisType&& other)
             : m_data(other.m_data)
         {
             assert_valid_to_assign(*this, other);
@@ -195,6 +195,11 @@ namespace tla {
         inline Type& operator()(U32 i) {
             return const_cast<Type&>(static_cast<const ThisType*>(this)->operator()(i));
         }
+
+        Matrix<Type, Cols, Rows> free_transpose() {
+            static_assert(Cols == 1 || Rows == 1);
+            return Matrix<Type, Cols, Rows>(m_data);
+        }
     };
 
     template <typename Type>
@@ -218,26 +223,26 @@ namespace tla {
         }
 
         template <U32 OtherRows, U32 OtherCols>
-        explicit Matrix(Matrix<Type, OtherRows, OtherCols>& other)
+        Matrix(Matrix<Type, OtherRows, OtherCols>& other)
             : m_data(other.m_data)
             , m_rows(rows(other))
             , m_cols(cols(other))
         {}
 
-        explicit Matrix(ThisType& other)
+        Matrix(ThisType& other)
             : m_data(other.m_data)
             , m_rows(rows(other))
             , m_cols(cols(other))
         {}
 
         template <U32 OtherRows, U32 OtherCols>
-        explicit Matrix(Matrix<Type, OtherRows, OtherCols>&& other)
+        Matrix(Matrix<Type, OtherRows, OtherCols>&& other)
             : m_data(other.m_data)
             , m_rows(rows(other))
             , m_cols(cols(other))
         {}
 
-        explicit Matrix(ThisType&& other)
+        Matrix(ThisType&& other)
             : m_data(other.m_data)
             , m_rows(rows(other))
             , m_cols(cols(other))
@@ -284,6 +289,21 @@ namespace tla {
             m_data = new_data;
             m_rows = new_rows;
             m_cols = new_cols;
+        }
+
+        inline void resize(U32 new_rows, U32 new_cols) {
+            m_rows = new_rows;
+            m_cols = new_cols;
+        }
+
+        Matrix<Type, 0, 0> transpose() {
+            if (m_rows == 1 || m_cols == 1) {
+                return Matrix<Type, 0, 0>(m_data, m_cols, m_rows);
+            }
+
+            Matrix<Type, 0, 0> result(m_data, m_cols, m_rows);
+            transpose<Type, 0, 0, 0, 0>(result, *this);
+            return result;
         }
 
         inline const Type& operator()(U32 r, U32 c) const {
@@ -446,6 +466,21 @@ namespace tla {
         }
     }
 
+    template <typename Type, U32 XRows, U32 XCols, U32 YRows, U32 YCols, typename Function>
+    void assign_apply(Matrix<Type, XRows, XCols>& x, const Matrix<Type, YRows, YCols>& y, Function f) {
+        static_assert(XRows == YRows || XRows == 0 || YRows == 0);
+        assert(rows(x) == rows(y));
+
+        static_assert(XCols == YCols || XCols == 0 || YCols == 0);
+        assert(cols(x) == cols(y));
+
+        for (U32 r = 0; r < rows(x); ++r) {
+            for (U32 c = 0; c < cols(x); ++c) {
+                x(r, c) = f(y(r, c));
+            }
+        }
+    }
+
     template <typename Type, U32 ResultRows, U32 ResultCols, U32 ARows, U32 ACols, U32 BRows, U32 BCols>
     void multiply(Matrix<Type, ResultRows, ResultCols>& result, const Matrix<Type, ARows, ACols>& a, const Matrix<Type, BRows, BCols>& b) {
         // TODO(TB): assert result is not pointing to same data as a or b?
@@ -465,6 +500,83 @@ namespace tla {
                     result(r, c) += a(r, i) * b(i, c);
                 }
             }
+        }
+    }
+
+    template <typename Type, U32 ResultRows, U32 ResultCols, U32 ARows, U32 ACols, U32 BRows, U32 BCols>
+    void multiply_accumulate(Matrix<Type, ResultRows, ResultCols>& result, const Matrix<Type, ARows, ACols>& a, const Matrix<Type, BRows, BCols>& b) {
+        // TODO(TB): assert result is not pointing to same data as a or b?
+        static_assert(ACols == BRows || ACols == 0 || BRows == 0);
+        assert(cols(a) == rows(b));
+
+        static_assert(ResultRows == ARows || ResultRows == 0 || ARows == 0);
+        assert(rows(result) == rows(a));
+
+        static_assert(ResultCols == BCols || ResultCols == 0 || BCols == 0);
+        assert(cols(result) == cols(b));
+
+        for (U32 r = 0; r < rows(result); ++r) {
+            for (U32 c = 0; c < cols(result); ++c) {
+                for (U32 i = 0; i < cols(a); ++i) {
+                    result(r, c) += a(r, i) * b(i, c);
+                }
+            }
+        }
+    }
+
+    template <typename Type, U32 ResultRows, U32 ResultCols, U32 XRows, U32 XCols, U32 YRows, U32 YCols, U32 ZRows, U32 ZCols>
+    void multiply_add(Matrix<Type, ResultRows, ResultCols>& result, const Matrix<Type, XRows, XCols>& x, const Matrix<Type, YRows, YCols>& y, const Matrix<Type, ZRows, ZCols>& z) {
+        // TODO(TB): assert result is not pointing to same data as a or b?
+        static_assert(XCols == YRows || XCols == 0 || YRows == 0);
+        assert(cols(x) == rows(y));
+
+        static_assert(ResultRows == XRows || ResultRows == 0 || XRows == 0);
+        assert(rows(result) == rows(x));
+
+        static_assert(ResultCols == YCols || ResultCols == 0 || YCols == 0);
+        assert(cols(result) == cols(y));
+
+        static_assert(ResultRows == ZRows || ResultRows == 0 || ZRows == 0);
+        assert(rows(result) == rows(z));
+
+        static_assert(ResultCols == ZCols || ResultCols == 0 || ZCols == 0);
+        assert(cols(result) == cols(z));
+
+        for (U32 r = 0; r < rows(result); ++r) {
+            for (U32 c = 0; c < cols(result); ++c) {
+                result(r, c) = z(r, c);
+                for (U32 i = 0; i < cols(x); ++i) {
+                    result(r, c) += x(r, i) * y(i, c);
+                }
+            }
+        }
+    }
+
+    template <typename Type, U32 ResultRows, U32 ResultCols, U32 XRows, U32 XCols>
+    void transpose(Matrix<Type, ResultRows, ResultCols>& result, const Matrix<Type, XRows, XCols>& x) {
+        static_assert(ResultRows == XCols || ResultRows == 0 || XCols == 0);
+        assert(rows(result) == cols(x));
+
+        static_assert(ResultCols == XRows || ResultCols == 0 || XRows == 0);
+        assert(cols(result) == rows(x));
+
+        for (U32 r = 0; r < rows(x); ++r) {
+            for (U32 c = 0; c < cols(x); ++c) {
+                result(c, r) = x(r, c);
+            }
+        }
+    }
+
+    template <typename Type, U32 ResultRows, U32 ResultCols, U32 XRows, U32 XCols>
+    void transpose_col(Matrix<Type, ResultRows, ResultCols>& result, const Matrix<Type, XRows, XCols>& x, U32 c) {
+        static_assert(ResultRows == XRows || ResultRows == 0 || XRows == 0);
+        assert(rows(result) == rows(x));
+
+        static_assert(ResultCols == 1 || ResultCols == 0);
+        assert(cols(result) == 1);
+
+        for (U32 r = 0; r < rows(x); ++r) {
+            result(r) = x(r, c);
         }
     }
 
@@ -599,6 +711,17 @@ namespace tla {
             }
         }
         return a;
+    }
+
+    template <typename Type, U32 ARows, U32 ACols, U32 BRows, U32 BCols>
+    void elementwise_multiply_by_sigmoid_derivative_of(Matrix<Type, ARows, ACols>& a, const Matrix<Type, BRows, BCols>& b) {
+        assert_equal_dimensions(a, b);
+
+        for (U32 r = 0; r < rows(a); ++r) {
+            for (U32 c = 0; c < cols(a); ++c) {
+                a(r, c) *= sigmoid_derivative(b(r, c));
+            }
+        }
     }
 }
 #endif // INCLUDE_TIM_LINEAR_ALGEBRA_HPP
