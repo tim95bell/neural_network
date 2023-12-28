@@ -368,6 +368,50 @@ namespace tla {
     }
 
 #if USE_NEON
+    template <U32 Count>
+    void assign_apply_sigmoid_neon(Matrix<float, 1, Count> a_l, const Matrix<float, 1, Count> z_l) {
+        static constexpr U32 count = Count / 4;
+        static constexpr U32 leftover_start = count * 4;
+        static constexpr U32 r = 0;
+        float buffer[4];
+        const float ones_buffer[4]{1.0f, 1.0f, 1.0f, 1.0f};
+        float32x4_t ones = vld1q_f32(&ones_buffer[0]);
+        for (U32 c = 0; c < count; ++c) {
+            for (U32 i = 0; i < 4; ++i) {
+                buffer[i] = expf(-z_l(r, c * 4 + i));
+            }
+
+            float32x4_t x = vld1q_f32(&buffer[0]);
+            x = vaddq_f32(ones, x);
+#if 1
+            float32x4_t x_inverse = vrecpeq_f32(x);
+#else
+            float32x4_t x_reciprocal = vrecpeq_f32(x);
+            float32x4_t x_inverse = vmulq_f32(vrecpsq_f32(x, x_reciprocal), x_reciprocal);
+#endif
+            memcpy(&a_l(r, c * 4), &x_inverse, 4 * sizeof(float));
+        }
+        for (U32 c = leftover_start; c < Count; ++c) {
+            a_l(r, c) = sigmoid(z_l(r, c));
+        }
+    }
+#endif
+
+    template <U32 Count>
+    void assign_apply_sigmoid_basic(Matrix<float, 1, Count> a_l, const Matrix<float, 1, Count> z_l) {
+        assign_apply(a_l, z_l, sigmoid);
+    }
+
+    template <U32 Count>
+    void assign_apply_sigmoid(Matrix<float, 1, Count> a_l, const Matrix<float, 1, Count> z_l) {
+#if USE_NEON
+        assign_apply_sigmoid_neon(a_l, z_l);
+#else
+        assign_apply_sigmoid_basic(a_l, z_l);
+#endif
+    }
+
+#if USE_NEON
     template <typename Type, U32 ARows, U32 ACols, U32 BRows, U32 BCols>
     void add_neon(Matrix<Type, ARows, ACols> a, const Matrix<Type, BRows, BCols> b) {
         // TODO(TB): try doing this with a bigger batch size. maybe 4 at a time
@@ -849,6 +893,65 @@ namespace tla {
         // sigmoid_defivative = sigmoid(x) * (1.0f - sigmoid(x));
     }
 #endif
+
+#if USE_NEON
+    template <U32 Count>
+    void first_dc_da_neon(tla::Matrix<float, 1, Count> dc_da_l, tla::Matrix<float, 1, Count> a_l, tla::Matrix<float, 1, Count> output, tla::Matrix<float, 1, Count> z_l) {
+        static constexpr U32 count = Count / 4;
+        static constexpr U32 leftover_start = count * 4;
+        static constexpr U32 r = 0;
+        float buffer[4];
+        const float ones_buffer[4]{1.0f, 1.0f, 1.0f, 1.0f};
+        float32x4_t ones = vld1q_f32(&ones_buffer[0]);
+        for (U32 c = 0; c < count; ++c) {
+            for (U32 i = 0; i < 4; ++i) {
+                buffer[i] = expf(-z_l(r, c * 4 + i));
+            }
+
+            float32x4_t x = vld1q_f32(&buffer[0]);
+            x = vaddq_f32(ones, x);
+#if 1
+            float32x4_t x_inverse = vrecpeq_f32(x);
+#else
+            float32x4_t x_reciprocal = vrecpeq_f32(x);
+            float32x4_t x_inverse = vmulq_f32(vrecpsq_f32(x, x_reciprocal), x_reciprocal);
+#endif
+            float32x4_t y = vsubq_f32(ones, x_inverse);
+            // sigmoid_derivative(z_l)
+            y = vmulq_f32(x_inverse, y);
+            // a_l
+            float32x4_t a = vld1q_f32(&a_l(r, c * 4));
+            // output
+            float32x4_t o = vld1q_f32(&output(r, c * 4));
+            // a_l - output
+            a = vsubq_f32(a, o);
+            // (a_l - output) * sigmoid_derivative(z_l)
+            a = vmulq_f32(a, y);
+            // (a_l - output) * sigmoid_derivative(z_l) * 2
+            a = vmulq_n_f32(a, 2.0f);
+            memcpy(&dc_da_l(r, c * 4), &a, 4 * sizeof(float));
+        }
+        for (U32 c = leftover_start; c < Count; ++c) {
+            dc_da_l(r, c) = 2 * (a_l(r, c) - output(r, c)) * sigmoid_derivative(z_l(r, c));
+        }
+    }
+#endif
+
+    template <U32 Count>
+    void first_dc_da_basic(tla::Matrix<float, 1, Count> dc_da_l, tla::Matrix<float, 1, Count> a_l, tla::Matrix<float, 1, Count> output, tla::Matrix<float, 1, Count> z_l) {
+        for (U32 j = 0; j < Count; ++j) {
+            dc_da_l(j) = 2 * (a_l(j) - output(j)) * sigmoid_derivative(z_l(j));
+        }
+    }
+
+    template <U32 Count>
+    void first_dc_da(tla::Matrix<float, 1, Count> dc_da_l, tla::Matrix<float, 1, Count> a_l, tla::Matrix<float, 1, Count> output, tla::Matrix<float, 1, Count> z_l) {
+#if USE_NEON
+        first_dc_da_neon(dc_da_l, a_l, output, z_l);
+#else
+        first_dc_da_basic(dc_da_l, a_l, output, z_l);
+#endif
+    }
 
     template <typename Type, U32 ARows, U32 ACols, U32 BRows, U32 BCols>
     void elementwise_multiply_by_sigmoid_derivative_of_basic(Matrix<Type, ARows, ACols> a, const Matrix<Type, BRows, BCols> b) {

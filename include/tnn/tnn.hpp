@@ -552,7 +552,7 @@ namespace tnn {
         auto a_l = get_a<L>(n);
         tla::multiply_add(z_l, a_k, w_l, b_l);
 
-        tla::assign_apply(a_l, z_l, tla::sigmoid);
+        tla::assign_apply_sigmoid(a_l, z_l);
 
         if constexpr (L < N::count()) {
             forward<L + 1>(n);
@@ -636,9 +636,7 @@ namespace tnn {
             float dc_da_m_buffer[N::largest_layer_count()];
             tla::Matrix<float, 1, N::output_layer_count()> dc_da_l(&dc_da_l_buffer[0]);
 
-            for (U32 j = 0; j < N::output_layer_count(); ++j) {
-                dc_da_l(j) = 2 * (a_l(j) - output(j)) * tla::sigmoid_derivative(z_l(j));
-            }
+            tla::first_dc_da(dc_da_l, a_l, output, z_l);
 
             db_l += dc_da_l;
             tla::multiply_accumulate(dw_l, a_k_t, dc_da_l);
