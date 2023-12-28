@@ -99,7 +99,7 @@ namespace tla {
 #endif
 
 #if USE_NEON
-    template <typename Type, U32 ResultRows, U32 ResultCols, U32 ARows, U32 ACols, U32 BRows, U32 BCols, U32 batch_size = 4>
+    template <typename Type, U32 ResultRows, U32 ResultCols, U32 ARows, U32 ACols, U32 BRows, U32 BCols>
     void multiply_neon_2(Matrix<Type, ResultRows, ResultCols> result, const Matrix<Type, ARows, ACols> a, const Matrix<Type, BRows, BCols> b);
 #endif
 
@@ -120,7 +120,7 @@ namespace tla {
 #endif
 
 #if USE_NEON
-    template <typename Type, U32 ResultRows, U32 ResultCols, U32 ARows, U32 ACols, U32 BRows, U32 BCols, U32 batch_size = 4>
+    template <typename Type, U32 ResultRows, U32 ResultCols, U32 ARows, U32 ACols, U32 BRows, U32 BCols>
     void multiply_accumulate_neon_2(Matrix<Type, ResultRows, ResultCols> result, const Matrix<Type, ARows, ACols> a, const Matrix<Type, BRows, BCols> b);
 #endif
 
@@ -374,8 +374,7 @@ namespace tla {
         static constexpr U32 leftover_start = count * 4;
         static constexpr U32 r = 0;
         float buffer[4];
-        const float ones_buffer[4]{1.0f, 1.0f, 1.0f, 1.0f};
-        float32x4_t ones = vld1q_f32(&ones_buffer[0]);
+        float32x4_t ones = vmovq_n_f32(1.0f);
         for (U32 c = 0; c < count; ++c) {
             for (U32 i = 0; i < 4; ++i) {
                 buffer[i] = expf(-z_l(r, c * 4 + i));
@@ -389,7 +388,7 @@ namespace tla {
             float32x4_t x_reciprocal = vrecpeq_f32(x);
             float32x4_t x_inverse = vmulq_f32(vrecpsq_f32(x, x_reciprocal), x_reciprocal);
 #endif
-            memcpy(&a_l(r, c * 4), &x_inverse, 4 * sizeof(float));
+            vst1q_f32(&a_l(r, c * 4), x_inverse);
         }
         for (U32 c = leftover_start; c < Count; ++c) {
             a_l(r, c) = sigmoid(z_l(r, c));
@@ -422,7 +421,7 @@ namespace tla {
                 float32x4_t a_row = vld1q_f32(&a(r, c * 4));
                 float32x4_t b_row = vld1q_f32(&b(r, c * 4));
                 a_row = vaddq_f32(a_row, b_row);
-                memcpy(&a(r, c * 4), &a_row, 4 * sizeof(float));
+                vst1q_f32(&a(r, c * 4), a_row);
             }
             for (U32 c = leftover_start; c < ACols; ++c) {
                 a(r, c) += b(r, c);
@@ -462,7 +461,7 @@ namespace tla {
                 float32x4_t a_row = vld1q_f32(&a(r, c * 4));
                 float32x4_t b_row = vld1q_f32(&b(r, c * 4));
                 a_row = vsubq_f32(a_row, b_row);
-                memcpy(&a(r, c * 4), &a_row, 4 * sizeof(float));
+                vst1q_f32(&a(r, c * 4), a_row);
             }
             for (U32 c = leftover_start; c < ACols; ++c) {
                 a(r, c) -= b(r, c);
@@ -586,8 +585,9 @@ namespace tla {
 #endif
 
 #if USE_NEON
-    template <typename Type, U32 ResultRows, U32 ResultCols, U32 ARows, U32 ACols, U32 BRows, U32 BCols, U32 batch_size>
+    template <typename Type, U32 ResultRows, U32 ResultCols, U32 ARows, U32 ACols, U32 BRows, U32 BCols>
     void multiply_neon_2(Matrix<Type, ResultRows, ResultCols> result, const Matrix<Type, ARows, ACols> a, const Matrix<Type, BRows, BCols> b) {
+        static constexpr U32 batch_size = 4;
         static constexpr U32 OuterRows = ARows;
         static constexpr U32 Inner = ACols;
         static constexpr U32 OuterCols = BCols;
@@ -598,38 +598,48 @@ namespace tla {
         static constexpr U32 leftover_vectors = (OuterCols / vector_size) - (batch_count * batch_size);
         static constexpr U32 leftover_singles = OuterCols - (batch_count * batch_size * vector_size) - (leftover_vectors * vector_size);
 
-        float32x4_t res[batch_size];
+        float32x4x4_t res;
         for (U32 a_r = 0; a_r < OuterRows; ++a_r) {
             for (U32 batch_i = 0; batch_i < batch_count; ++batch_i) {
                 // perform first multiply (for 0th column of a) first, as no addition is required
                 // a[a_r][0] * b[0]
                 for (U32 b_c = 0; b_c < batch_size; ++b_c) {
-                    res[b_c] = vld1q_f32(&b(0, ((batch_i * batch_size) + b_c) * vector_size));
-                    res[b_c] = vmulq_n_f32(res[b_c], a(a_r, 0));
+                    res.val[b_c] = vld1q_f32(&b(0, ((batch_i * batch_size) + b_c) * vector_size));
+                    res.val[b_c] = vmulq_n_f32(res.val[b_c], a(a_r, 0));
                 }
                 for (U32 b_r = 1; b_r < Inner; ++b_r) {
                     for (U32 b_c = 0; b_c < batch_size; ++b_c) {
                         float32x4_t x = vld1q_f32(&b(b_r, ((batch_i * batch_size) + b_c) * vector_size));
                         x = vmulq_n_f32(x, a(a_r, b_r));
-                        res[b_c] = vaddq_f32(res[b_c], x);
+                        res.val[b_c] = vaddq_f32(res.val[b_c], x);
                     }
                 }
-                memcpy(&result(a_r, batch_i * batch_size * vector_size), &res[0], batch_size * vector_size * sizeof(float));
+                vst1q_f32_x4(&result(a_r, batch_i * batch_size * vector_size), res);
             }
             if constexpr (leftover_vectors > 0) {
                 const U32 start = batch_count * batch_size * vector_size;
                 for (U32 b_c = 0; b_c < leftover_vectors; ++b_c) {
-                    res[b_c] = vld1q_f32(&b(0, start + (b_c * vector_size)));
-                    res[b_c] = vmulq_n_f32(res[b_c], a(a_r, 0));
+                    res.val[b_c] = vld1q_f32(&b(0, start + (b_c * vector_size)));
+                    res.val[b_c] = vmulq_n_f32(res.val[b_c], a(a_r, 0));
                 }
                 for (U32 b_r = 1; b_r < Inner; ++b_r) {
                     for (U32 b_c = 0; b_c < leftover_vectors; ++b_c) {
                         float32x4_t x = vld1q_f32(&b(b_r, start + (b_c * vector_size)));
                         x = vmulq_n_f32(x, a(a_r, b_r));
-                        res[b_c] = vaddq_f32(res[b_c], x);
+                        res.val[b_c] = vaddq_f32(res.val[b_c], x);
                     }
                 }
-                memcpy(&result(a_r, start), &res[0], leftover_vectors * vector_size * sizeof(float));
+                // TODO(TB): how to avoid this
+                if constexpr (leftover_vectors == 1) {
+                    vst1q_f32(&result(a_r, start), res.val[0]);
+                } else if constexpr (leftover_vectors == 2) {
+                    vst1q_f32(&result(a_r, start), res.val[0]);
+                    vst1q_f32(&result(a_r, start + 4), res.val[1]);
+                } else if constexpr (leftover_vectors == 3) {
+                    vst1q_f32(&result(a_r, start), res.val[0]);
+                    vst1q_f32(&result(a_r, start + 4), res.val[1]);
+                    vst1q_f32(&result(a_r, start + 8), res.val[2]);
+                }
             }
             if constexpr (leftover_singles > 0) {
                 const U32 start = batch_count * batch_size * vector_size + leftover_vectors * vector_size;
@@ -722,8 +732,9 @@ namespace tla {
 #endif
 
 #if USE_NEON
-    template <typename Type, U32 ResultRows, U32 ResultCols, U32 ARows, U32 ACols, U32 BRows, U32 BCols, U32 batch_size>
+    template <typename Type, U32 ResultRows, U32 ResultCols, U32 ARows, U32 ACols, U32 BRows, U32 BCols>
     void multiply_accumulate_neon_2(Matrix<Type, ResultRows, ResultCols> result, const Matrix<Type, ARows, ACols> a, const Matrix<Type, BRows, BCols> b) {
+        static constexpr U32 batch_size = 4;
         static constexpr U32 OuterRows = ARows;
         static constexpr U32 Inner = ACols;
         static constexpr U32 OuterCols = BCols;
@@ -734,34 +745,43 @@ namespace tla {
         static constexpr U32 leftover_vectors = (OuterCols / vector_size) - (batch_count * batch_size);
         static constexpr U32 leftover_singles = OuterCols - (batch_count * batch_size * vector_size) - (leftover_vectors * vector_size);
 
-        float32x4_t res[batch_size];
+        float32x4x4_t res;
         for (U32 a_r = 0; a_r < OuterRows; ++a_r) {
             for (U32 batch_i = 0; batch_i < batch_count; ++batch_i) {
                 for (U32 b_c = 0; b_c < batch_size; ++b_c) {
-                    res[b_c] = vld1q_f32(&result(a_r, ((batch_i * batch_size) + b_c) * vector_size));
+                    res.val[b_c] = vld1q_f32(&result(a_r, ((batch_i * batch_size) + b_c) * vector_size));
                 }
                 for (U32 b_r = 0; b_r < Inner; ++b_r) {
                     for (U32 b_c = 0; b_c < batch_size; ++b_c) {
                         float32x4_t x = vld1q_f32(&b(b_r, ((batch_i * batch_size) + b_c) * vector_size));
                         x = vmulq_n_f32(x, a(a_r, b_r));
-                        res[b_c] = vaddq_f32(res[b_c], x);
+                        res.val[b_c] = vaddq_f32(res.val[b_c], x);
                     }
                 }
-                memcpy(&result(a_r, batch_i * batch_size * vector_size), &res[0], batch_size * vector_size * sizeof(float));
+                vst1q_f32_x4(&result(a_r, batch_i * batch_size * vector_size), res);
             }
             if constexpr (leftover_vectors > 0) {
                 const U32 start = batch_count * batch_size * vector_size;
                 for (U32 b_c = 0; b_c < leftover_vectors; ++b_c) {
-                    res[b_c] = vld1q_f32(&result(a_r, start + (b_c * vector_size)));
+                    res.val[b_c] = vld1q_f32(&result(a_r, start + (b_c * vector_size)));
                 }
                 for (U32 b_r = 0; b_r < Inner; ++b_r) {
                     for (U32 b_c = 0; b_c < leftover_vectors; ++b_c) {
                         float32x4_t x = vld1q_f32(&b(b_r, start + (b_c * vector_size)));
                         x = vmulq_n_f32(x, a(a_r, b_r));
-                        res[b_c] = vaddq_f32(res[b_c], x);
+                        res.val[b_c] = vaddq_f32(res.val[b_c], x);
                     }
                 }
-                memcpy(&result(a_r, start), &res[0], leftover_vectors * vector_size * sizeof(float));
+                if constexpr (leftover_vectors == 1) {
+                    vst1q_f32(&result(a_r, start), res.val[0]);
+                } else if constexpr (leftover_vectors == 2) {
+                    vst1q_f32(&result(a_r, start), res.val[0]);
+                    vst1q_f32(&result(a_r, start + 4), res.val[1]);
+                } else if constexpr (leftover_vectors == 3) {
+                    vst1q_f32(&result(a_r, start), res.val[0]);
+                    vst1q_f32(&result(a_r, start + 4), res.val[1]);
+                    vst1q_f32(&result(a_r, start + 8), res.val[2]);
+                }
             }
             if constexpr (leftover_singles > 0) {
                 const U32 start = batch_count * batch_size * vector_size + leftover_vectors * vector_size;
@@ -863,8 +883,7 @@ namespace tla {
         static constexpr U32 count = ACols / 4;
         static constexpr U32 leftover_start = count * 4;
         float buffer[4];
-        const float ones_buffer[4]{1.0f, 1.0f, 1.0f, 1.0f};
-        float32x4_t ones = vld1q_f32(&ones_buffer[0]);
+        float32x4_t ones = vmovq_n_f32(1.0f);
         for (U32 r = 0; r < ARows; ++r) {
             for (U32 c = 0; c < count; ++c) {
                 for (U32 i = 0; i < 4; ++i) {
@@ -883,7 +902,7 @@ namespace tla {
                 y = vmulq_f32(x_inverse, y);
                 float32x4_t z = vld1q_f32(&a(r, c * 4));
                 z = vmulq_f32(z, y);
-                memcpy(&a(r, c * 4), &z, 4 * sizeof(float));
+                vst1q_f32(&a(r, c * 4), z);
             }
             for (U32 c = leftover_start; c < ACols; ++c) {
                 a(r, c) *= sigmoid_derivative(b(r, c));
@@ -901,8 +920,7 @@ namespace tla {
         static constexpr U32 leftover_start = count * 4;
         static constexpr U32 r = 0;
         float buffer[4];
-        const float ones_buffer[4]{1.0f, 1.0f, 1.0f, 1.0f};
-        float32x4_t ones = vld1q_f32(&ones_buffer[0]);
+        float32x4_t ones = vmovq_n_f32(1.0f);
         for (U32 c = 0; c < count; ++c) {
             for (U32 i = 0; i < 4; ++i) {
                 buffer[i] = expf(-z_l(r, c * 4 + i));
@@ -929,7 +947,7 @@ namespace tla {
             a = vmulq_f32(a, y);
             // (a_l - output) * sigmoid_derivative(z_l) * 2
             a = vmulq_n_f32(a, 2.0f);
-            memcpy(&dc_da_l(r, c * 4), &a, 4 * sizeof(float));
+            vst1q_f32(&dc_da_l(r, c * 4), a);
         }
         for (U32 c = leftover_start; c < Count; ++c) {
             dc_da_l(r, c) = 2 * (a_l(r, c) - output(r, c)) * sigmoid_derivative(z_l(r, c));
@@ -1001,7 +1019,7 @@ namespace tla {
             for (U32 c = 0; c < count; ++c) {
                 float32x4_t x_row = vld1q_f32(&x(r, c * 4));
                 x_row = vaddq_f32(x_row, v);
-                memcpy(&x(r, c * 4), &x_row, 4 * sizeof(float));
+                vst1q_f32(&x(r, c * 4), x_row);
             }
             for (U32 c = leftover_start; c < Cols; ++c) {
                 x(r, c) += v;
@@ -1038,7 +1056,7 @@ namespace tla {
             for (U32 c = 0; c < count; ++c) {
                 float32x4_t x_row = vld1q_f32(&x(r, c * 4));
                 x_row = vsubq_f32(x_row, v);
-                memcpy(&x(r, c * 4), &x_row, 4 * sizeof(float));
+                vst1q_f32(&x(r, c * 4), x_row);
             }
             for (U32 c = leftover_start; c < Cols; ++c) {
                 x(r, c) -= v;
@@ -1075,7 +1093,7 @@ namespace tla {
             for (U32 c = 0; c < count; ++c) {
                 float32x4_t x_row = vld1q_f32(&x(r, c * 4));
                 x_row = vmulq_n_f32(x_row, v);
-                memcpy(&x(r, c * 4), &x_row, 4 * sizeof(float));
+                vst1q_f32(&x(r, c * 4), x_row);
             }
             for (U32 c = leftover_start; c < Cols; ++c) {
                 x(r, c) *= v;
@@ -1112,7 +1130,7 @@ namespace tla {
             for (U32 c = 0; c < count; ++c) {
                 float32x4_t x_row = vld1q_f32(&x(r, c * 4));
                 x_row = vmulq_n_f32(x_row, 1.0f / v);
-                memcpy(&x(r, c * 4), &x_row, 4 * sizeof(float));
+                vst1q_f32(&x(r, c * 4), x_row);
             }
             for (U32 c = leftover_start; c < Cols; ++c) {
                 x(r, c) /= v;
