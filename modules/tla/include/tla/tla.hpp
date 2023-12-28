@@ -2,8 +2,6 @@
 #ifndef INCLUDE_TIM_LINEAR_ALGEBRA_HPP
 #define INCLUDE_TIM_LINEAR_ALGEBRA_HPP
 
-#define USE_NEON 1
-
 #include <cstdlib>
 #include <cstdio>
 #include <cassert>
@@ -831,9 +829,17 @@ namespace tla {
 
                 float32x4_t x = vld1q_f32(&buffer[0]);
                 x = vaddq_f32(ones, x);
-                x = vrecpeq_f32(x);
-                float32x4_t y = vsubq_f32(ones, x);
-                x = vmulq_f32(x, y);
+#if 1
+                float32x4_t x_inverse = vrecpeq_f32(x);
+#else
+                float32x4_t x_reciprocal = vrecpeq_f32(x);
+                float32x4_t x_inverse = vmulq_f32(vrecpsq_f32(x, x_reciprocal), x_reciprocal);
+#endif
+                float32x4_t y = vsubq_f32(ones, x_inverse);
+                y = vmulq_f32(x_inverse, y);
+                float32x4_t z = vld1q_f32(&a(r, c * 4));
+                z = vmulq_f32(z, y);
+                memcpy(&a(r, c * 4), &z, 4 * sizeof(float));
             }
             for (U32 c = leftover_start; c < ACols; ++c) {
                 a(r, c) *= sigmoid_derivative(b(r, c));
