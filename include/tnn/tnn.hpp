@@ -630,44 +630,48 @@ namespace tnn {
             auto db_l = get_db<N::count()>(n);
             auto dw_l = get_dw<N::count()>(n);
             auto a_k = get_a<N::count() - 1>(n);
+            auto a_k_t = tla::swap_dimensions(a_k);
 
-            float dc_da_buffer[N::largest_layer_count() * 2];
-            // TODO(TB): update this when can have 1 dynamic and 1 static dimension
-            tla::Matrix<float, 0, 0> dc_da_l(&dc_da_buffer[0], 1, N::output_layer_count());
-            tla::Matrix<float, 0, 0> dc_da_m(&dc_da_buffer[N::largest_layer_count()], 1, N::output_layer_count());
+            float dc_da_l_buffer[N::largest_layer_count()];
+            float dc_da_m_buffer[N::largest_layer_count()];
+            tla::Matrix<float, 1, N::output_layer_count()> dc_da_l(&dc_da_l_buffer[0]);
 
             for (U32 j = 0; j < N::output_layer_count(); ++j) {
                 dc_da_l(j) = 2 * (a_l(j) - output(j)) * tla::sigmoid_derivative(z_l(j));
             }
 
             db_l += dc_da_l;
-            tla::multiply_accumulate(dw_l, a_k.free_transpose(), dc_da_l);
+            tla::multiply_accumulate(dw_l, a_k_t, dc_da_l);
 
-            train_gradient_descent_internal<N::count() - 1>(n, dc_da_m, dc_da_l);
+            train_gradient_descent_internal<N::count() - 1>(n, dc_da_m_buffer, dc_da_l_buffer);
         }
 
         apply_deltas<DataCount>(n, rate);
     }
 
     template <U32 L, U32... NetworkShape>
-    void train_gradient_descent_internal(Network<NetworkShape...>& n, tla::Matrix<float, 0, 0>& dc_da_l, tla::Matrix<float, 0, 0>& dc_da_m) {
+    void train_gradient_descent_internal(Network<NetworkShape...>& n, float dc_da_l_buffer[Network<NetworkShape...>::largest_layer_count()], float dc_da_m_buffer[Network<NetworkShape...>::largest_layer_count()]) {
         using N = Network<NetworkShape...>;
         static_assert(L > 0 && L < N::count());
+        tla::Matrix<float, 1, N::template layer_count<L>()> dc_da_l(&dc_da_l_buffer[0]);
+        tla::Matrix<float, 1, N::template layer_count<L + 1>()> dc_da_m(&dc_da_m_buffer[0]);
+        tla::Matrix<float, N::template layer_count<L + 1>(), 1> dc_da_m_t = tla::swap_dimensions(dc_da_m);
+        tla::Matrix<float, N::template layer_count<L>(), 1> dc_da_l_t = tla::swap_dimensions(dc_da_l);
         auto w_m = get_w<L + 1>(n);
         auto z_l = get_z<L>(n);
         auto db_l = get_db<L>(n);
         auto dw_l = get_dw<L>(n);
         auto a_k = get_a<L - 1>(n);
-        dc_da_l.resize(N::template layer_count<L>(), 1);
-        tla::multiply(dc_da_l, w_m, dc_da_m.transpose());
-        dc_da_l = dc_da_l.transpose();
+        auto a_k_t = tla::swap_dimensions(a_k);
+
+        tla::multiply(dc_da_l_t, w_m, dc_da_m_t);
         tla::elementwise_multiply_by_sigmoid_derivative_of(dc_da_l, z_l);
 
         db_l += dc_da_l;
-        tla::multiply_accumulate(dw_l, a_k.free_transpose(), dc_da_l);
+        tla::multiply_accumulate(dw_l, a_k_t, dc_da_l);
         
         if constexpr (L > 1) {
-            train_gradient_descent_internal<L - 1>(n, dc_da_m, dc_da_l);
+            train_gradient_descent_internal<L - 1>(n, dc_da_m_buffer, dc_da_l_buffer);
         }
     }
     // #endregion
