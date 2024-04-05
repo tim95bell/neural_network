@@ -1,6 +1,7 @@
 
 #define TIM_NEURAL_NETWORK_HPP_IMPLEMENTATION 1
 #define TIM_LINEAR_ALGEBRA_HPP_IMPLEMENTATION 1
+#define USE_NEON 1
 #include <tnn/tnn.hpp>
 #include <cstdio>
 #include <vector>
@@ -14,8 +15,7 @@ static const tnn::U32 train_data_count = data_count * 0.7f;
 static const tnn::U32 test_data_count = data_count - train_data_count;
 static const float rate = 1e-1 * 3;
 static const tnn::U32 batch_count = 420;
-//static const tnn::U32 epoch_count = 100;
-static const tnn::U32 epoch_count = 10;
+static const tnn::U32 epoch_count = 400;
 
 struct Timer {
     Timer(const char* in_label)
@@ -121,7 +121,7 @@ void test(tnn::Network<NetworkShape...>& n, tnn::TrainingDatum<input_size, outpu
         }
 
         for (tnn::U32 j = 0; j < N::output_layer_count(); ++j) {
-            const float d = output(largest_index) - a(j);
+            const float d = output(j) - a(j);
             average_cost += d * d;
         }
     }
@@ -143,13 +143,13 @@ void train(tnn::Network<NetworkShape...>& n, tnn::TrainingDatum<input_size, outp
     using N = tnn::Network<NetworkShape...>;
     static_assert(input_size == N::input_layer_count());
     static_assert(output_size == N::output_layer_count());
-    //printf("cost: %f\n", tnn::average_cost<train_data_count>(n, data));
+    printf("cost: %f\n", tnn::average_cost<test_data_count>(n, data + train_data_count));
     for (tnn::U32 epoch = 0; epoch < epoch_count; ++epoch) {
         tnn::shuffle_array(data, train_data_count);
         for (tnn::U32 i = 0; i < train_data_count; i += batch_count) {
             tnn::train_gradient_descent<batch_count>(n, data + i, rate);
         }
-        //printf("cost: %f\n", tnn::average_cost<train_data_count>(n, data));
+        printf("cost: %f\n", tnn::average_cost<test_data_count>(n, data + train_data_count));
     }
     //printf("training finished\n");
 }
